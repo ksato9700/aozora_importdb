@@ -1,20 +1,24 @@
 {
   "name": "aozora_importdb",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "import Aozora books/persons information to a DB",
+  "main": "csv2db.js",
   "scripts": {
+    "start": "node csv2db.js",
     "execute": "node csv2db.js && node pid2db.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "Kenichi Sato <ksato9700@gmail.com>",
   "license": "MIT",
   "dependencies": {
-    "adm-zip": ">=0.5",
-    "csv-parse": ">=5.6",
-    "dotenv": ">=16.5",
-    "mongodb": ">=6.16",
-    "request": ">=2.88",
-    "request-promise": ">=4.2",
-    "scraperjs": "1.2.0"
+    "adm-zip": "^0.5.10",
+    "cheerio": "^1.0.0",
+    "csv-parse": "^5.5.3",
+    "dotenv": "^16.4.5",
+    "mongodb": "^6.8.0",
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

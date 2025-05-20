@@ -1,6 +1,6 @@
-const request = require('request-promise');
 const AdmZip = require('adm-zip');
 const csvparse = require('csv-parse/lib/sync');
+const fetch = require('node-fetch'); // Using node-fetch instead of request-promise
 
 require('dotenv').config();
 
@@ -11,10 +11,9 @@ const mongodb_port = process.env.AOZORA_MONGODB_PORT || '27017';
 const mongo_url = `mongodb://${mongodb_credential}${mongodb_host}:${mongodb_port}/aozora`;
 
 const LIST_URL_BASE = 'https://github.com/aozorabunko/aozorabunko/raw/master/index_pages/';
-const LISTFILE_INP = 'list_inp_person_all_utf8.zip';
 const LIST_URL_PUB = 'list_person_all_extended_utf8.zip';
 
-PERSON_EXTENDED_ATTRS = [
+const PERSON_EXTENDED_ATTRS = [
   'book_id',
   'title',
   'title_yomi',
@@ -72,7 +71,7 @@ PERSON_EXTENDED_ATTRS = [
   'html_updated'
 ];
 
-ROLE_MAP = {
+const ROLE_MAP = {
   '著者': 'authors',
   '翻訳者': 'translators',
   '編者': 'editors',
@@ -84,30 +83,24 @@ const get_bookobj = (entry) => {
   let role = null;
   let person = {};
 
-  // console.log(entry);
   PERSON_EXTENDED_ATTRS.forEach((e,i) => {
     let value = entry[i];
-    if(value != '') {
+    if(value !== '') {
       if(['book_id', 'person_id', 'text_updated', 'html_updated'].includes(e)) {
         value = parseInt(value);
       } else if(['copyright', 'author_copyright'].includes(e)) {
-        value = value != 'なし';
+        value = value !== 'なし';
       } else if(['release_date', 'last_modified', 'date_of_birth', 'date_of_death',
                  'text_last_modified', 'html_last_modified'].includes(e)) {
         value = new Date(value);
       }
 
-      // console.log(`${e}, ${i}, ${value}`);
-
       if(['person_id', 'first_name', 'last_name', 'last_name_yomi', 'first_name_yomi',
           'last_name_sort', 'first_name_sort', 'last_name_roman', 'first_name_roman',
           'date_of_birth', 'date_of_death', 'author_copyright'].includes(e)) {
         person[e] = value;
-      } else if(e == 'role') {
+      } else if(e === 'role') {
         role = ROLE_MAP[value];
-        if(!role) {
-          // console.log(value);
-        }
       } else {
         book[e] = value;
       }
@@ -122,7 +115,12 @@ const get_csv_data = async (local_file) => {
     const fs = require('fs');
     csvtext = fs.readFileSync(local_file);
   } else {
-    csvtext = await request.get(LIST_URL_BASE + LIST_URL_PUB, {encoding: null});
+    // Use node-fetch to get the data as a Buffer
+    const response = await fetch(LIST_URL_BASE + LIST_URL_PUB);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch data: ${response.statusText}`);
+    }
+    csvtext = await response.buffer(); // Get the response body as a Buffer
   }
   const zip = AdmZip(csvtext);
   return zip.readFile(zip.getEntries()[0]);
@@ -132,7 +130,7 @@ const store_books = async (books, books_batch_list) => {
   const books_batch = books.initializeUnorderedBulkOp();
   for (let book_id in books_batch_list) {
     let book = books_batch_list[book_id];
-    books_batch.find({book_id: book_id}).upsert().updateOne(book);
+    books_batch.find({book_id: parseInt(book_id)}).upsert().updateOne(book);
   }
   return books_batch.execute();
 };
@@ -141,7 +139,7 @@ const store_persons = async (persons, persons_batch_list) => {
   const persons_batch = persons.initializeUnorderedBulkOp();
   for (let person_id in persons_batch_list) {
     let person = persons_batch_list[person_id];
-    persons_batch.find({person_id: person_id}).upsert().updateOne(person);
+    persons_batch.find({person_id: parseInt(person_id)}).upsert().updateOne(person);
   }
   return persons_batch.execute();
 };
@@ -152,20 +150,17 @@ const import_to_db = async (db, refresh) => {
   const books = db.collection('books');
   const persons = db.collection('persons');
 
-  // const data = csvparse(await get_csv_data('list_person_all_extended_utf8.zip'));
   const data = csvparse(await get_csv_data());
 
   let updated;
   if (refresh) {
     updated = data;
-      
   } else {
-    const the_latest_item = await books.findOne({}, {fields: {release_date: 1},
-                                                     sort: {release_date: -1}});
-    const last_release_date =
-          (the_latest_item)? the_latest_item.release_date: new Date('1970-01-01');
+    const the_latest_item = await books.findOne({}, {fields: {release_date: 1}, sort: {release_date: -1}});
+    const last_release_date = (the_latest_item)? the_latest_item.release_date: new Date('1970-01-01');
 
     updated = data.slice(1).filter((entry) => {
+      // Assuming entry[11] is the release_date string
       return last_release_date < new Date(entry[11]);
     });
   }
@@ -180,14 +175,16 @@ const import_to_db = async (db, refresh) => {
       if (!books_batch_list[book.book_id]) {
         books_batch_list[book.book_id] = book;
       }
-      if (!books_batch_list[book.book_id][role]) {
+      if (role && !books_batch_list[book.book_id][role]) { // Ensure role exists before accessing
         books_batch_list[book.book_id][role] = [];
       }
-      books_batch_list[book.book_id][role].push({
-        person_id: person.person_id,
-        last_name: person.last_name,
-        first_name: person.first_name
-      });
+      if (role) { // Only push if a valid role was mapped
+        books_batch_list[book.book_id][role].push({
+          person_id: person.person_id,
+          last_name: person.last_name,
+          first_name: person.first_name
+        });
+      }
       if (!persons_batch_list[person.person_id]) {
         persons_batch_list[person.person_id] = person;
       }
@@ -201,14 +198,19 @@ const import_to_db = async (db, refresh) => {
 };
 
 const run = async () => {
-  
-  const db = await mongodb.MongoClient.connect(mongo_url);
-  const refresh = process.argv[2];
-  import_to_db(db, refresh);
+  let client;
+  try {
+    client = await mongodb.MongoClient.connect(mongo_url, { useNewUrlParser: true, useUnifiedTopology: true });
+    const db = client.db('aozora'); // Specify the database name if not in the URL
+    const refresh = process.argv[2];
+    await import_to_db(db, refresh);
+  } catch (err) {
+    console.error('An error occurred:', err);
+  } finally {
+    if (client) {
+      client.close();
+    }
+  }
 };
 
 run();
-
-
-
-
